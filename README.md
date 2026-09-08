@@ -16,16 +16,16 @@ Claude Code (official installer) if they are missing, and adds `~/.local/bin` to
 ## Quick start
 
 ```sh
-claude-profile new work          # creates ~/.claude-work, seeds it, opens the browser login
-echo 'claude-work() { claude-profile run work "$@"; }' >> ~/.zshrc
-source ~/.zshrc
+claude-profile new work          # creates ~/.claude-work, installs the claude-work command, opens the browser login
 
 claude-work                      # second account
 claude                           # first account, unchanged — run both side by side
 claude-profile status            # who is logged in where
 ```
 
-Add as many profiles as you like: `claude-profile new <name>` and a matching shell function.
+`new` drops an executable `claude-<name>` next to `claude-profile` (in `~/.local/bin`), so it
+works in zsh, bash, fish or anything else with no shell-config edits.
+Add as many profiles as you like with `claude-profile new <name>`.
 
 ## Commands
 
@@ -36,6 +36,7 @@ Add as many profiles as you like: `claude-profile new <name>` and a matching she
 | `run <name> [args]` | Launch `claude` under the profile (checks links, syncs settings, passes args through) |
 | `sync [--force] <name>` | Copy `~/.claude/settings.json` into the profile if the profile's copy is unmodified |
 | `relink <name>` | Re-create the shared symlinks |
+| `launcher <name>` | (Re)create the `claude-<name>` command |
 | `status` | List profiles with account email and Keychain entry |
 
 ## How it works
@@ -79,15 +80,13 @@ fi
 
 ```sh
 claude-profile run work auth logout     # clears the Keychain entry
-rm -rf ~/.claude-work
+rm -rf ~/.claude-work ~/.local/bin/claude-work
 ```
-
-Then delete the shell function from `~/.zshrc`.
 
 ## Uninstall
 
 ```sh
-rm ~/.local/bin/claude-profile
+rm ~/.local/bin/claude-profile ~/.local/bin/claude-<name>   # the script and each launcher it created
 ```
 
 ## Requirements

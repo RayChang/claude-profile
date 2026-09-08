@@ -50,14 +50,19 @@ head -1 "$tmp" | grep -q '^#!/usr/bin/env bash' || fail "downloaded file does no
 install -m 0755 "$tmp" "$BIN_DIR/claude-profile"
 rm -f "$tmp"
 
-# 4. Make sure the bin dir is on PATH for new shells
+# 4. Make sure the bin dir is on PATH for new shells (rc file chosen from $SHELL)
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *)
-    rc="$HOME/.zshrc"
-    case "${SHELL:-}" in */bash) rc="$HOME/.bashrc" ;; esac
     bin_disp="$(printf '%s' "$BIN_DIR" | sed "s|^$HOME|\$HOME|")"
-    line="export PATH=\"$bin_disp:\$PATH\""
+    case "$(basename "${SHELL:-sh}")" in
+      zsh)  rc="$HOME/.zshrc";              line="export PATH=\"$bin_disp:\$PATH\"" ;;
+      bash) if [ "$(uname -s)" = "Darwin" ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi
+            line="export PATH=\"$bin_disp:\$PATH\"" ;;
+      fish) rc="$HOME/.config/fish/config.fish"; line="set -gx PATH \"$bin_disp\" \$PATH" ;;
+      *)    rc="$HOME/.profile";            line="export PATH=\"$bin_disp:\$PATH\"" ;;
+    esac
+    mkdir -p "$(dirname "$rc")"
     grep -qsF "$line" "$rc" || printf '\n# added by claude-profile installer\n%s\n' "$line" >> "$rc"
     say "added $bin_disp to PATH in $rc (open a new terminal to pick it up)"
     ;;
@@ -67,8 +72,7 @@ say ""
 say "claude-profile installed: $BIN_DIR/claude-profile"
 say ""
 say "Next steps:"
-say "  claude-profile new work                                   # create a 2nd profile and log in"
-say "  echo 'claude-work() { claude-profile run work \"\$@\"; }' >> ~/.zshrc"
-say "  claude-work                                               # 2nd account; plain 'claude' keeps the 1st"
+say "  claude-profile new work     # creates the profile, installs the 'claude-work' command, opens login"
+say "  claude-work                 # 2nd account; plain 'claude' keeps the 1st"
 say ""
 say "More: claude-profile --help"
