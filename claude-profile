@@ -23,13 +23,18 @@ so it has its own login, .claude.json, sessions and plugins. Shared, read-only c
 is symlinked from ~/.claude; settings.json is copied and kept in sync. Requires: claude, jq.
 
 Usage: claude-profile <command> [args]
-  new <name> [--no-login]   create \$HOME/.claude-<name>, seed it from ~/.claude, then log in
+  new <name> [--shared|--clean] [--no-login]
+                            create \$HOME/.claude-<name> and log in
+                              --shared  link CLAUDE.md/rules/skills/... from ~/.claude, copy
+                                        settings.json, seed MCP servers and memory (default)
+                              --clean   empty profile; Claude Code starts from scratch
+                            (asked interactively when neither flag is given)
   login <name>              run 'claude auth login' for the profile
   run <name> [claude args]  launch claude under the profile (checks links, syncs settings)
   sync [--force] <name>     copy ~/.claude/settings.json into the profile if it is unmodified
   relink <name>             re-create the shared symlinks
   launcher <name>           (re)create the claude-<name> launcher next to this script
-  status                    list profiles with account email and stored credentials
+  status                    list profiles with mode, account email and stored credentials
 
 Typical flow:
   claude-profile new work      # creates the dir, installs 'claude-work', opens the browser login
@@ -122,6 +127,31 @@ sync_settings() {  # $1 = profile dir, $2 = force 0/1, $3 = quiet 0/1
   return 2
 }
 
+MARKER=".claude-profile"   # inside a profile dir: "mode=shared" or "mode=clean"
+
+profile_mode() {  # $1 = profile dir → shared | clean | "" (not a profile)
+  if [ -f "$1/$MARKER" ]; then sed -n 's/^mode=//p' "$1/$MARKER"
+  elif [ -f "$1/.settings.synced" ]; then echo shared   # created before the marker existed
+  fi
+}
+
+is_profile() { [ -n "$(profile_mode "$1")" ]; }
+
+ask_mode() {  # prints shared|clean; interactive only when stdin is a terminal
+  local choice=""
+  if [ -t 0 ]; then
+    {
+      echo "How should profile \"$1\" be set up?"
+      echo "  1) shared — link CLAUDE.md/rules/skills/... from ~/.claude, copy settings.json,"
+      echo "              seed MCP servers and auto-memory (default)"
+      echo "  2) clean  — empty profile; Claude Code starts from scratch"
+      printf 'Choose [1/2]: '
+    } >&2
+    read -r choice
+  fi
+  case "$choice" in 2|clean|c) echo clean ;; *) echo shared ;; esac
+}
+
 # Write an executable claude-<name> next to this script (works in any shell, no rc edits).
 install_launcher() {  # $1 = profile name
   local name="$1" self_dir launcher
@@ -161,16 +191,31 @@ seed_memory() {  # $1 = profile dir; copies auto-memory per project as a startin
 }
 
 cmd_new() {
-  local name="" nologin=0 a dir
-  for a in "$@"; do case "$a" in --no-login) nologin=1 ;; *) name="$a" ;; esac; done
-  [ -n "$name" ] || die "usage: claude-profile new <name> [--no-login]"
+  local name="" nologin=0 mode="" a dir
+  for a in "$@"; do
+    case "$a" in
+      --no-login) nologin=1 ;;
+      --shared)   mode=shared ;;
+      --clean)    mode=clean ;;
+      -*)         die "unknown option: $a" ;;
+      *)          name="$a" ;;
+    esac
+  done
+  [ -n "$name" ] || die "usage: claude-profile new <name> [--shared|--clean] [--no-login]"
   dir="$(profile_dir "$name")"
   [ -e "$dir" ] && die "$dir already exists (use relink / sync / login instead)"
+  [ -n "$mode" ] || mode="$(ask_mode "$name")"
   mkdir -p "$dir"
-  link_shared "$dir"
-  sync_settings "$dir" 1 0
-  seed_claude_json "$dir"
-  seed_memory "$dir"
+  echo "mode=$mode" > "$dir/$MARKER"
+  if [ "$mode" = shared ]; then
+    link_shared "$dir"
+    sync_settings "$dir" 1 0
+    seed_claude_json "$dir"
+    seed_memory "$dir"
+  else
+    echo "clean profile: nothing copied from ~/.claude; Claude Code will run its onboarding"
+  fi
+  echo "mode:             $mode"
   echo "profile dir:      $dir"
   echo "keychain service: $(keychain_service "$dir")"
   install_launcher "$name"
@@ -193,8 +238,10 @@ cmd_run() {
   shift
   dir="$(profile_dir "$name")"
   [ -d "$dir" ] || die "no profile at $dir (run: claude-profile new $name)"
-  check_links "$dir" || echo "claude-profile: shared links out of date in $dir; run: claude-profile relink $name" >&2
-  sync_settings "$dir" 0 1 || true
+  if [ "$(profile_mode "$dir")" = shared ]; then
+    check_links "$dir" || echo "claude-profile: shared links out of date in $dir; run: claude-profile relink $name" >&2
+    sync_settings "$dir" 0 1 || true
+  fi
   export CLAUDE_CONFIG_DIR="$dir"
   exec claude "$@"
 }
@@ -204,12 +251,14 @@ cmd_sync() {
   for a in "$@"; do case "$a" in --force|-f) force=1 ;; *) name="$a" ;; esac; done
   dir="$(profile_dir "$name")"
   [ -d "$dir" ] || die "no profile at $dir"
+  [ "$(profile_mode "$dir")" = shared ] || die "$dir is a clean profile; nothing is synced from ~/.claude"
   sync_settings "$dir" "$force" 0
 }
 
 cmd_relink() {
   local dir; dir="$(profile_dir "${1:-}")"
   [ -d "$dir" ] || die "no profile at $dir"
+  [ "$(profile_mode "$dir")" = shared ] || die "$dir is a clean profile; nothing is linked from ~/.claude"
   link_shared "$dir"
   check_links "$dir" && echo "links ok"
 }
@@ -221,15 +270,19 @@ cmd_launcher() {
 }
 
 cmd_status() {
-  local dir json email svc kc
-  printf '%-32s %-34s %s\n' "CONFIG DIR" "ACCOUNT" "CREDENTIALS"
+  local dir json email svc kc mode
+  printf '%-28s %-8s %-32s %s\n' "CONFIG DIR" "MODE" "ACCOUNT" "CREDENTIALS"
   for dir in "$MAIN" "$HOME"/.claude-*; do
-    [ "$dir" = "$MAIN" ] || [ -f "$dir/.settings.synced" ] || continue  # skip non-profile dirs
-    if [ "$dir" = "$MAIN" ]; then json="$HOME/.claude.json"; svc="Claude Code-credentials"
-    else json="$dir/.claude.json"; svc="$(keychain_service "$dir")"; fi
-    email="$(jq -r '.oauthAccount.emailAddress // "not logged in"' "$json" 2>/dev/null || echo "no .claude.json")"
+    if [ "$dir" = "$MAIN" ]; then
+      [ -d "$dir" ] || continue
+      json="$HOME/.claude.json"; svc="Claude Code-credentials"; mode="main"
+    else
+      is_profile "$dir" || continue   # skip unrelated ~/.claude-* dirs
+      json="$dir/.claude.json"; svc="$(keychain_service "$dir")"; mode="$(profile_mode "$dir")"
+    fi
+    email="$(jq -r '.oauthAccount.emailAddress // "not logged in"' "$json" 2>/dev/null || echo "not logged in")"
     if has_credentials "$dir" "$svc"; then kc="present"; else kc="missing"; fi
-    printf '%-32s %-34s %s\n' "${dir/#$HOME/~}" "$email" "$kc"
+    printf '%-28s %-8s %-32s %s\n' "${dir/#$HOME/~}" "$mode" "$email" "$kc"
   done
 }
 

@@ -24,21 +24,25 @@ claude                           # first account, unchanged — run both side by
 claude-profile status            # who is logged in where
 ```
 
-`new` drops an executable `claude-<name>` next to `claude-profile` (in `~/.local/bin`), so it
-works in zsh, bash, fish or anything else with no shell-config edits.
+`new` asks whether the profile should be **shared** (inherit `CLAUDE.md`, rules, skills,
+settings, MCP servers and memory from `~/.claude`) or **clean** (empty; Claude Code runs its
+normal onboarding). Pass `--shared` or `--clean` to skip the question.
+
+`new` also drops an executable `claude-<name>` next to `claude-profile` (in `~/.local/bin`),
+so it works in zsh, bash, fish or anything else with no shell-config edits.
 Add as many profiles as you like with `claude-profile new <name>`.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `new <name> [--no-login]` | Create `~/.claude-<name>`, seed it from `~/.claude`, then run the login flow |
+| `new <name> [--shared\|--clean] [--no-login]` | Create `~/.claude-<name>` (shared: seeded from `~/.claude`; clean: empty), then run the login flow |
 | `login <name>` | Run `claude auth login` for that profile |
 | `run <name> [args]` | Launch `claude` under the profile (checks links, syncs settings, passes args through) |
-| `sync [--force] <name>` | Copy `~/.claude/settings.json` into the profile if the profile's copy is unmodified |
-| `relink <name>` | Re-create the shared symlinks |
+| `sync [--force] <name>` | Shared profiles: copy `~/.claude/settings.json` into the profile if the profile's copy is unmodified |
+| `relink <name>` | Shared profiles: re-create the symlinks |
 | `launcher <name>` | (Re)create the `claude-<name>` command |
-| `status` | List profiles with account email and whether credentials are stored |
+| `status` | List profiles with mode, account email and whether credentials are stored |
 
 ## How it works
 
@@ -48,7 +52,8 @@ Claude Code also keys its macOS Keychain entry to that directory
 `claude-profile run` just exports that variable and `exec`s `claude`; child processes
 (subagents, hooks) inherit it and stay on the same account.
 
-What a profile contains:
+What a **shared** profile contains (a **clean** profile starts empty and only gets the
+`.claude-profile` marker; Claude Code fills the rest in on first run):
 
 | Path in `~/.claude-<name>` | Kind | Why |
 |---|---|---|
