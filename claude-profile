@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# claude-profile — run Claude Code under separate accounts on one machine.
+#
+# A profile <name> is a config dir at $HOME/.claude-<name>, selected through
+# CLAUDE_CONFIG_DIR. Claude Code keys its macOS Keychain entry and .claude.json
+# to that dir, so each profile is a separate login. Read-only harness files are
+# symlinked from ~/.claude; everything Claude writes stays inside the profile.
+set -euo pipefail
+
+MAIN="$HOME/.claude"
+SHARED=(CLAUDE.md RTK.md rules output-styles skills commands agents)
+JSON_WHITELIST='{mcpServers, hasCompletedOnboarding, hasCompletedClaudeInChromeOnboarding, claudeInChromeDefaultEnabled} | with_entries(select(.value != null))'
+
+usage() {
+  cat <<EOF
+claude-profile — run Claude Code under several accounts on one machine (macOS).
+
+Each profile is its own config dir (\$HOME/.claude-<name>) selected via CLAUDE_CONFIG_DIR,
+so it has its own login, .claude.json, sessions and plugins. Shared, read-only files
+(CLAUDE.md, rules/, output-styles/, skills/, commands/, agents/) are symlinked from ~/.claude;
+settings.json is copied and kept in sync. Requires: claude, jq.
+
+Usage: claude-profile <command> [args]
+  new <name> [--no-login]   create \$HOME/.claude-<name>, seed it from ~/.claude, then log in
+  login <name>              run 'claude auth login' for the profile
+  run <name> [claude args]  launch claude under the profile (checks links, syncs settings)
+  sync [--force] <name>     copy ~/.claude/settings.json into the profile if it is unmodified
+  relink <name>             re-create the shared symlinks
+  status                    list profiles with account email and Keychain entry
+
+Typical flow:
+  claude-profile new work                      # creates the dir and opens the browser login
+  echo 'claude-work() { claude-profile run work "\$@"; }' >> ~/.zshrc
+  claude-work                                  # second account; plain 'claude' stays the first
+EOF
+}
+
+die() { echo "claude-profile: $*" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || die "jq is required (brew install jq)"
+command -v claude >/dev/null 2>&1 || die "claude CLI not found on PATH"
+
+profile_dir() {
+  local name="${1:-}"
+  [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || die "profile name must match [A-Za-z0-9_-]+"
+  printf '%s' "$HOME/.claude-$name"
+}
+
+# Mirrors Claude Code: "Claude Code-credentials-" + first 8 hex of sha256(config dir string).
+keychain_service() {
+  printf 'Claude Code-credentials-%s' "$(printf '%s' "$1" | shasum -a 256 | cut -c1-8)"
+}
+
+link_shared() {  # $1 = profile dir; creates missing links, moves anything in the way aside
+  local dir="$1" entry src dst bak
+  for entry in "${SHARED[@]}"; do
+    src="$MAIN/$entry"; dst="$dir/$entry"
+    [ -e "$src" ] || continue
+    if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then continue; fi
+    if [ -e "$dst" ] || [ -L "$dst" ]; then
+      bak="$dst.bak-$(date +%Y%m%d-%H%M%S)"
+      mv "$dst" "$bak"; echo "relink: moved $dst -> $bak"
+    fi
+    ln -s "$src" "$dst"; echo "linked $entry"
+  done
+}
+
+check_links() {  # $1 = profile dir; non-zero if any expected link is missing or wrong
+  local dir="$1" entry ok=0
+  for entry in "${SHARED[@]}"; do
+    [ -e "$MAIN/$entry" ] || continue
+    if ! { [ -L "$dir/$entry" ] && [ "$(readlink "$dir/$entry")" = "$MAIN/$entry" ]; }; then ok=1; fi
+  done
+  return $ok
+}
+
+# Copy ~/.claude/settings.json into the profile unless the profile's copy was edited
+# since the last sync (detected via the .settings.synced snapshot).
+sync_settings() {  # $1 = profile dir, $2 = force 0/1, $3 = quiet 0/1
+  local dir="$1" force="$2" quiet="$3"
+  local src="$MAIN/settings.json" dst="$dir/settings.json" snap="$dir/.settings.synced"
+  if [ ! -f "$src" ]; then
+    [ "$quiet" = 1 ] || echo "sync: no $src to copy; skipped"
+    return 0
+  fi
+  if [ "$force" = 1 ] || [ ! -f "$dst" ] || cmp -s "$dst" "$snap"; then
+    if cmp -s "$src" "$dst"; then
+      cp "$src" "$snap"
+      [ "$quiet" = 1 ] || echo "sync: already up to date"
+    else
+      cp "$src" "$dst"; cp "$src" "$snap"
+      [ "$quiet" = 1 ] || echo "sync: settings.json updated from ~/.claude"
+    fi
+    return 0
+  fi
+  echo "sync: $dst was edited since last sync; left untouched (force with: claude-profile sync --force)" >&2
+  return 2
+}
+
+seed_claude_json() {  # $1 = profile dir
+  local dst="$1/.claude.json"
+  [ -f "$dst" ] && return 0
+  if [ -f "$HOME/.claude.json" ]; then
+    jq "$JSON_WHITELIST" "$HOME/.claude.json" > "$dst"
+  else
+    echo '{}' > "$dst"
+  fi
+  echo "seeded .claude.json (mcpServers + onboarding flags only)"
+}
+
+seed_memory() {  # $1 = profile dir; copies auto-memory per project as a starting point
+  local dir="$1" mem proj n=0
+  for mem in "$MAIN"/projects/*/memory; do
+    [ -d "$mem" ] || continue
+    proj="$(basename "$(dirname "$mem")")"
+    [ -e "$dir/projects/$proj/memory" ] && continue
+    mkdir -p "$dir/projects/$proj"
+    cp -R "$mem" "$dir/projects/$proj/memory"
+    n=$((n + 1))
+  done
+  echo "seeded auto-memory for $n project(s)"
+}
+
+cmd_new() {
+  local name="" nologin=0 a dir
+  for a in "$@"; do case "$a" in --no-login) nologin=1 ;; *) name="$a" ;; esac; done
+  [ -n "$name" ] || die "usage: claude-profile new <name> [--no-login]"
+  dir="$(profile_dir "$name")"
+  [ -e "$dir" ] && die "$dir already exists (use relink / sync / login instead)"
+  mkdir -p "$dir"
+  link_shared "$dir"
+  sync_settings "$dir" 1 0
+  seed_claude_json "$dir"
+  seed_memory "$dir"
+  echo "profile dir:      $dir"
+  echo "keychain service: $(keychain_service "$dir")"
+  echo "zsh snippet:      claude-$name() { claude-profile run $name \"\$@\"; }"
+  if [ "$nologin" = 1 ]; then
+    echo "next: claude-profile login $name"
+  else
+    cmd_login "$name"
+  fi
+}
+
+cmd_login() {
+  local dir; dir="$(profile_dir "${1:-}")"
+  [ -d "$dir" ] || die "no profile at $dir (run: claude-profile new ${1:-<name>})"
+  CLAUDE_CONFIG_DIR="$dir" exec claude auth login
+}
+
+cmd_run() {
+  local name="${1:-}" dir
+  [ -n "$name" ] || die "usage: claude-profile run <name> [claude args]"
+  shift
+  dir="$(profile_dir "$name")"
+  [ -d "$dir" ] || die "no profile at $dir (run: claude-profile new $name)"
+  check_links "$dir" || echo "claude-profile: shared links out of date in $dir; run: claude-profile relink $name" >&2
+  sync_settings "$dir" 0 1 || true
+  export CLAUDE_CONFIG_DIR="$dir"
+  exec claude "$@"
+}
+
+cmd_sync() {
+  local force=0 name="" a dir
+  for a in "$@"; do case "$a" in --force|-f) force=1 ;; *) name="$a" ;; esac; done
+  dir="$(profile_dir "$name")"
+  [ -d "$dir" ] || die "no profile at $dir"
+  sync_settings "$dir" "$force" 0
+}
+
+cmd_relink() {
+  local dir; dir="$(profile_dir "${1:-}")"
+  [ -d "$dir" ] || die "no profile at $dir"
+  link_shared "$dir"
+  check_links "$dir" && echo "links ok"
+}
+
+cmd_status() {
+  local dir json email svc kc
+  printf '%-32s %-34s %s\n' "CONFIG DIR" "ACCOUNT" "KEYCHAIN"
+  for dir in "$MAIN" "$HOME"/.claude-*; do
+    [ "$dir" = "$MAIN" ] || [ -f "$dir/.settings.synced" ] || continue  # skip non-profile dirs
+    if [ "$dir" = "$MAIN" ]; then json="$HOME/.claude.json"; svc="Claude Code-credentials"
+    else json="$dir/.claude.json"; svc="$(keychain_service "$dir")"; fi
+    email="$(jq -r '.oauthAccount.emailAddress // "not logged in"' "$json" 2>/dev/null || echo "no .claude.json")"
+    if security find-generic-password -s "$svc" >/dev/null 2>&1; then kc="present"; else kc="missing"; fi
+    printf '%-32s %-34s %s\n' "${dir/#$HOME/~}" "$email" "$kc"
+  done
+}
+
+case "${1:-}" in
+  new)    shift; cmd_new "$@" ;;
+  login)  shift; cmd_login "$@" ;;
+  run)    shift; cmd_run "$@" ;;
+  sync)   shift; cmd_sync "$@" ;;
+  relink) shift; cmd_relink "$@" ;;
+  status) cmd_status ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1" ;;
+esac
