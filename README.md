@@ -10,8 +10,9 @@ each with its own login, sessions and plugins, all sharing your `CLAUDE.md`, rul
 curl -fsSL https://raw.githubusercontent.com/RayChang/claude-profile/main/install.sh | sh
 ```
 
-The installer puts `claude-profile` in `~/.local/bin`, installs `jq` (Homebrew) and
-Claude Code (official installer) if they are missing, and adds `~/.local/bin` to your PATH.
+The installer puts `claude-profile` in `~/.local/bin`, installs `jq` (Homebrew, apt, dnf or
+apk) and Claude Code (official installer) if they are missing, and adds `~/.local/bin` to the
+PATH in the rc file of your login shell (zsh, bash, fish, or `.profile`).
 
 ## Quick start
 
@@ -37,7 +38,7 @@ Add as many profiles as you like with `claude-profile new <name>`.
 | `sync [--force] <name>` | Copy `~/.claude/settings.json` into the profile if the profile's copy is unmodified |
 | `relink <name>` | Re-create the shared symlinks |
 | `launcher <name>` | (Re)create the `claude-<name>` command |
-| `status` | List profiles with account email and Keychain entry |
+| `status` | List profiles with account email and whether credentials are stored |
 
 ## How it works
 
@@ -51,7 +52,7 @@ What a profile contains:
 
 | Path in `~/.claude-<name>` | Kind | Why |
 |---|---|---|
-| `CLAUDE.md`, `RTK.md`, `rules/`, `output-styles/`, `skills/`, `commands/`, `agents/` | symlink → `~/.claude` | Read-only; edit once, applies everywhere |
+| `CLAUDE.md` (+ its relative `@imports`), `rules/`, `output-styles/`, `skills/`, `commands/`, `agents/`, `hooks/` | symlink → `~/.claude` | Read-only; edit once, applies everywhere |
 | `settings.json` | copy, kept in sync | Claude Code rewrites it and refuses to write through symlinks |
 | `.claude.json` | seeded (MCP servers + onboarding flags only) | Holds the account; must be separate |
 | `projects/*/memory/` | copied once | Auto-memory starting point; diverges afterwards |
@@ -91,8 +92,9 @@ rm ~/.local/bin/claude-profile ~/.local/bin/claude-<name>   # the script and eac
 
 ## Requirements
 
-macOS, Claude Code 2.1+, `jq`, `curl`. Verified against Claude Code 2.1.263.
-Linux should work (credentials go to `.credentials.json` inside the profile) but is untested.
+Claude Code 2.1+, `jq`, `curl`, bash. Verified on macOS against Claude Code 2.1.263.
+On Linux, credentials live in `.credentials.json` inside each profile instead of the Keychain;
+the tool accounts for that but has not been exercised there.
 
 ## License
 

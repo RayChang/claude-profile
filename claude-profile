@@ -8,17 +8,19 @@
 set -euo pipefail
 
 MAIN="$HOME/.claude"
-SHARED=(CLAUDE.md RTK.md rules output-styles skills commands agents)
+# Read-only user-level content Claude Code loads from the config dir. Files imported by
+# CLAUDE.md with a relative "@path" are added at runtime (see shared_entries).
+SHARED=(CLAUDE.md rules output-styles skills commands agents hooks)
 JSON_WHITELIST='{mcpServers, hasCompletedOnboarding, hasCompletedClaudeInChromeOnboarding, claudeInChromeDefaultEnabled} | with_entries(select(.value != null))'
 
 usage() {
   cat <<EOF
-claude-profile — run Claude Code under several accounts on one machine (macOS).
+claude-profile — run Claude Code under several accounts on one machine.
 
 Each profile is its own config dir (\$HOME/.claude-<name>) selected via CLAUDE_CONFIG_DIR,
-so it has its own login, .claude.json, sessions and plugins. Shared, read-only files
-(CLAUDE.md, rules/, output-styles/, skills/, commands/, agents/) are symlinked from ~/.claude;
-settings.json is copied and kept in sync. Requires: claude, jq.
+so it has its own login, .claude.json, sessions and plugins. Shared, read-only content
+(CLAUDE.md and its @imports, rules/, output-styles/, skills/, commands/, agents/, hooks/)
+is symlinked from ~/.claude; settings.json is copied and kept in sync. Requires: claude, jq.
 
 Usage: claude-profile <command> [args]
   new <name> [--no-login]   create \$HOME/.claude-<name>, seed it from ~/.claude, then log in
@@ -27,7 +29,7 @@ Usage: claude-profile <command> [args]
   sync [--force] <name>     copy ~/.claude/settings.json into the profile if it is unmodified
   relink <name>             re-create the shared symlinks
   launcher <name>           (re)create the claude-<name> launcher next to this script
-  status                    list profiles with account email and Keychain entry
+  status                    list profiles with account email and stored credentials
 
 Typical flow:
   claude-profile new work      # creates the dir, installs 'claude-work', opens the browser login
@@ -45,31 +47,55 @@ profile_dir() {
   printf '%s' "$HOME/.claude-$name"
 }
 
+# SHARED plus any relative @imports found in ~/.claude/CLAUDE.md (e.g. "@RULES.md").
+shared_entries() {
+  local e imports=()
+  for e in "${SHARED[@]}"; do printf '%s\n' "$e"; done
+  [ -f "$MAIN/CLAUDE.md" ] || return 0
+  while IFS= read -r e; do
+    e="${e#@}"
+    case "$e" in /*|~*|"") continue ;; esac   # only paths relative to the config dir
+    imports+=("$e")
+  done < <(grep -oE '(^|[[:space:]])@[^[:space:]]+' "$MAIN/CLAUDE.md" | tr -d ' \t')
+  [ "${#imports[@]}" -gt 0 ] && printf '%s\n' "${imports[@]}" | sort -u
+  return 0
+}
+
+sha256_8() {  # first 8 hex of sha256 of the argument; shasum (macOS) or sha256sum (Linux)
+  if command -v shasum >/dev/null 2>&1; then printf '%s' "$1" | shasum -a 256 | cut -c1-8
+  else printf '%s' "$1" | sha256sum | cut -c1-8; fi
+}
+
 # Mirrors Claude Code: "Claude Code-credentials-" + first 8 hex of sha256(config dir string).
-keychain_service() {
-  printf 'Claude Code-credentials-%s' "$(printf '%s' "$1" | shasum -a 256 | cut -c1-8)"
+keychain_service() { printf 'Claude Code-credentials-%s' "$(sha256_8 "$1")"; }
+
+# Is a login stored for this config dir? macOS: Keychain entry; elsewhere: .credentials.json.
+has_credentials() {  # $1 = config dir, $2 = keychain service name
+  if [ "$(uname -s)" = "Darwin" ]; then security find-generic-password -s "$2" >/dev/null 2>&1
+  else [ -f "$1/.credentials.json" ]; fi
 }
 
 link_shared() {  # $1 = profile dir; creates missing links, moves anything in the way aside
   local dir="$1" entry src dst bak
-  for entry in "${SHARED[@]}"; do
+  while IFS= read -r entry; do
     src="$MAIN/$entry"; dst="$dir/$entry"
     [ -e "$src" ] || continue
+    mkdir -p "$(dirname "$dst")"
     if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then continue; fi
     if [ -e "$dst" ] || [ -L "$dst" ]; then
       bak="$dst.bak-$(date +%Y%m%d-%H%M%S)"
       mv "$dst" "$bak"; echo "relink: moved $dst -> $bak"
     fi
     ln -s "$src" "$dst"; echo "linked $entry"
-  done
+  done < <(shared_entries)
 }
 
 check_links() {  # $1 = profile dir; non-zero if any expected link is missing or wrong
   local dir="$1" entry ok=0
-  for entry in "${SHARED[@]}"; do
+  while IFS= read -r entry; do
     [ -e "$MAIN/$entry" ] || continue
     if ! { [ -L "$dir/$entry" ] && [ "$(readlink "$dir/$entry")" = "$MAIN/$entry" ]; }; then ok=1; fi
-  done
+  done < <(shared_entries)
   return $ok
 }
 
@@ -196,13 +222,13 @@ cmd_launcher() {
 
 cmd_status() {
   local dir json email svc kc
-  printf '%-32s %-34s %s\n' "CONFIG DIR" "ACCOUNT" "KEYCHAIN"
+  printf '%-32s %-34s %s\n' "CONFIG DIR" "ACCOUNT" "CREDENTIALS"
   for dir in "$MAIN" "$HOME"/.claude-*; do
     [ "$dir" = "$MAIN" ] || [ -f "$dir/.settings.synced" ] || continue  # skip non-profile dirs
     if [ "$dir" = "$MAIN" ]; then json="$HOME/.claude.json"; svc="Claude Code-credentials"
     else json="$dir/.claude.json"; svc="$(keychain_service "$dir")"; fi
     email="$(jq -r '.oauthAccount.emailAddress // "not logged in"' "$json" 2>/dev/null || echo "no .claude.json")"
-    if security find-generic-password -s "$svc" >/dev/null 2>&1; then kc="present"; else kc="missing"; fi
+    if has_credentials "$dir" "$svc"; then kc="present"; else kc="missing"; fi
     printf '%-32s %-34s %s\n' "${dir/#$HOME/~}" "$email" "$kc"
   done
 }

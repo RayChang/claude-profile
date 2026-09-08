@@ -26,11 +26,12 @@ have curl || fail "curl is required"
 
 # 1. jq — used to seed each profile's .claude.json
 if ! have jq; then
-  if have brew; then
-    say "jq not found; installing with Homebrew..."
-    brew install jq
-  else
-    fail "jq is required. Install Homebrew (https://brew.sh) and re-run, or install jq by hand."
+  say "jq not found; installing..."
+  if have brew; then brew install jq
+  elif have apt-get; then sudo apt-get install -y jq
+  elif have dnf; then sudo dnf install -y jq
+  elif have apk; then sudo apk add jq
+  else fail "jq is required: install it with your package manager and re-run."
   fi
 fi
 
