@@ -1,8 +1,9 @@
 # claude-profile
 
-Run [Claude Code](https://code.claude.com) under several Anthropic accounts on one Mac,
+Run [Claude Code](https://code.claude.com) under several Anthropic accounts on one machine,
 at the same time. One terminal on your personal account, another on your work account,
-each with its own login, sessions and plugins, all sharing your `CLAUDE.md`, rules and skills.
+each with its own login, sessions and plugins — optionally sharing your `CLAUDE.md`, rules,
+skills and settings, or starting completely clean.
 
 ## Install
 
@@ -24,13 +25,22 @@ claude                           # first account, unchanged — run both side by
 claude-profile status            # who is logged in where
 ```
 
-`new` asks whether the profile should be **shared** (inherit `CLAUDE.md`, rules, skills,
-settings, MCP servers and memory from `~/.claude`) or **clean** (empty; Claude Code runs its
-normal onboarding). Pass `--shared` or `--clean` to skip the question.
-
-`new` also drops an executable `claude-<name>` next to `claude-profile` (in `~/.local/bin`),
+`new` drops an executable `claude-<name>` next to `claude-profile` (in `~/.local/bin`),
 so it works in zsh, bash, fish or anything else with no shell-config edits.
 Add as many profiles as you like with `claude-profile new <name>`.
+
+## Shared or clean?
+
+`new` asks which kind of profile you want (pass `--shared` or `--clean` to skip the question):
+
+| | **shared** (default) | **clean** |
+|---|---|---|
+| Starts with | Your `~/.claude` setup: `CLAUDE.md`, rules, skills, hooks, `settings.json`, MCP servers, auto-memory | An empty directory |
+| First launch | Feels like your usual Claude Code, on the other account | Claude Code's normal onboarding (theme, login) |
+| Later edits to `~/.claude` | Linked files follow automatically; `settings.json` is re-synced on each launch unless you changed the profile's copy | Nothing carries over |
+| Good for | A second account for the same person and workflow | A separate persona, a demo, or testing a fresh setup |
+
+Login, sessions, history and plugins are always per profile, whichever kind you pick.
 
 ## Commands
 
@@ -38,7 +48,7 @@ Add as many profiles as you like with `claude-profile new <name>`.
 |---|---|
 | `new <name> [--shared\|--clean] [--no-login]` | Create `~/.claude-<name>` (shared: seeded from `~/.claude`; clean: empty), then run the login flow |
 | `login <name>` | Run `claude auth login` for that profile |
-| `run <name> [args]` | Launch `claude` under the profile (checks links, syncs settings, passes args through) |
+| `run <name> [args]` | Launch `claude` under the profile (shared profiles: checks links and syncs settings first; args pass through to `claude`) |
 | `sync [--force] <name>` | Shared profiles: copy `~/.claude/settings.json` into the profile if the profile's copy is unmodified |
 | `relink <name>` | Shared profiles: re-create the symlinks |
 | `launcher <name>` | (Re)create the `claude-<name>` command |
